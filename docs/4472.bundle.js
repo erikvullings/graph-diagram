@@ -1,0 +1,2 @@
+"use strict";(self.webpackChunkgraph_diagram=self.webpackChunkgraph_diagram||[]).push([["4472"],{10234:function(e,r,a){a.r(r),a.d(r,{DraggedTreeItemsIdentifier:()=>t,TreeViewsDnDService:()=>s});class s{constructor(){this._dragOperations=new Map}removeDragOperationTransfer(e){if(e&&this._dragOperations.has(e)){let r=this._dragOperations.get(e);return this._dragOperations.delete(e),r}}}class t{constructor(e){this.identifier=e}}}}]);
+//# sourceMappingURL=4472.bundle.js.map
