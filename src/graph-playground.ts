@@ -58,13 +58,15 @@ export const Playground: FactoryComponent<{}> = () => {
   let editor: any;
   let sampleText = `graphDiagram The three amigos
     person Alice 25 #lightgreen
-    node Bob 12 #lightblue
-    node Charlie 8 #orange
+    person Bob 12 #lightblue
+    person Charlie 8 #orange
+    book One_flew_over_the_cuckoo_nest 16 #purple 
     
     Alice->Bob: Hello Bob!
     Bob->Alice: Hi Alice!
     Alice-5->Charlie: How are you?
-    Charlie--Bob: Good, thanks!`;
+    Charlie--Bob: Good, thanks!
+    Charlie--One_flew_over_the_cuckoo_nest: Has read`;
   let title: string;
   let hoveredNode: string | null = null;
 

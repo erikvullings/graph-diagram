@@ -102,7 +102,7 @@ export class GraphParser {
   parseNode(line: string) {
     const parts = line.trim().split(/\s+/);
     const nodeType = parts[0].toLowerCase() as NodeType;
-    const label = parts[1];
+    const id = parts[1];
     let size = 10;
     let color = "#666";
 
@@ -136,15 +136,9 @@ export class GraphParser {
       }
     }
 
-    console.log(
-      `${nodeType} ${label} position and image: ${this.nodeTypeToImage(
-        nodeType
-      )}`
-    );
-
-    this.nodes.set(label, {
-      id: label,
-      label,
+    this.nodes.set(id, {
+      id,
+      label: id.replace(/_/g, " "),
       size,
       color,
       image: this.nodeTypeToImage(nodeType),
