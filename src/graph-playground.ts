@@ -305,9 +305,9 @@ export const Playground: FactoryComponent<{}> = () => {
     ExportManager.exportToPNG(sigma, title);
   };
 
-  // const exportSVG = () => {
-  //   ExportManager.exportToSVG(graph);
-  // };
+  const exportSVG = () => {
+    ExportManager.exportToSVG(graph, title);
+  };
 
   return {
     oncreate({ dom }) {
@@ -367,15 +367,15 @@ export const Playground: FactoryComponent<{}> = () => {
               {
                 onclick: () => exportPNG(),
               },
-              "PNG"
+              "Export PNG"
             ),
-            // m(
-            //   "button.control-btn",
-            //   {
-            //     onclick: () => exportSVG(),
-            //   },
-            //   "📄 SVG"
-            // ),
+            m(
+              "button.control-btn",
+              {
+                onclick: () => exportSVG(),
+              },
+              "Export SVG"
+            ),
             m(
               "button.toggle-btn",
               {
