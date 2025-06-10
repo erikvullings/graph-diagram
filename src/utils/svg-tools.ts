@@ -27,50 +27,93 @@ export interface GraphSVG {
   edges: EdgeSVG[];
 }
 
+type Bounds = {
+  minX: number;
+  minY: number;
+  width: number;
+  height: number;
+};
 interface SVGResult {
   paths: string;
   labels: string;
   defs: string;
 }
 
+// New function to group edges by source-target pairs
+const groupEdgesByPair = (edges: EdgeSVG[]): Map<string, EdgeSVG[]> => {
+  const groups = new Map<string, EdgeSVG[]>();
+
+  for (const edge of edges) {
+    const key = `${edge.source}-${edge.target}`;
+    if (!groups.has(key)) {
+      groups.set(key, []);
+    }
+    groups.get(key)!.push(edge);
+  }
+
+  return groups;
+};
+
 const convertGraphToSVGEdges = (
   graph: GraphSVG,
+  bounds: Bounds,
   optimize: boolean = true
 ): SVGResult => {
   const svgPaths: string[] = [];
   const svgLabels: string[] = [];
   const svgDefs: string[] = [];
 
-  for (const edge of graph.edges) {
-    const sourceNode = graph.nodes[edge.source];
-    const targetNode = graph.nodes[edge.target];
+  // Group edges by source-target pairs
+  const edgeGroups = groupEdgesByPair(graph.edges);
 
-    if (!sourceNode || !targetNode) continue;
+  for (const [_pairKey, edges] of edgeGroups) {
+    for (let i = 0; i < edges.length; i++) {
+      const edge = edges[i];
+      const sourceNode = graph.nodes[edge.source];
+      const targetNode = graph.nodes[edge.target];
 
-    let pathData = createEdgePath(sourceNode, targetNode, edge);
-    if (pathData) {
-      if (optimize) {
-        pathData = optimizePath(pathData);
-      }
-      const color = edge.color || "currentColor";
-      svgPaths.push(`<path d="${pathData}" fill="${color}" />`);
+      if (!sourceNode || !targetNode) continue;
 
-      // Add edge label if present
-      if (edge.label) {
-        const labelResult = createEdgeLabel(sourceNode, targetNode, edge);
-        if (labelResult.includes("<defs>")) {
-          // Extract defs and label parts for curved text
-          const defsMatch = labelResult.match(/<defs>(.*?)<\/defs>/s);
-          const textMatch = labelResult.match(/<text[^>]*>.*?<\/text>/s);
-          if (defsMatch) svgDefs.push(defsMatch[1]);
-          if (textMatch) svgLabels.push(textMatch[0]);
-        } else {
-          svgLabels.push(labelResult);
+      // Calculate curvature multiplier for multiple edges
+      const curvatureMultiplier =
+        edges.length > 1 ? (i - (edges.length - 1) / 2) * 0.8 : 0;
+
+      let pathData = createEdgePath(
+        sourceNode,
+        targetNode,
+        edge,
+        curvatureMultiplier
+      );
+      if (pathData) {
+        if (optimize) {
+          pathData = optimizePath(pathData);
+        }
+        const color = edge.color || "currentColor";
+        svgPaths.push(`<path d="${pathData}" fill="${color}" />`);
+
+        // Add edge label if present
+        if (edge.label) {
+          const labelResult = createEdgeLabel(
+            sourceNode,
+            targetNode,
+            edge,
+            bounds,
+            curvatureMultiplier
+          );
+          if (labelResult.includes("<defs>")) {
+            // Extract defs and label parts for curved text
+            const defsMatch = labelResult.match(/<defs>(.*?)<\/defs>/s);
+            const textMatch = labelResult.match(/<text[^>]*>.*?<\/text>/s);
+            if (defsMatch) svgDefs.push(defsMatch[1]);
+            if (textMatch) svgLabels.push(textMatch[0]);
+          } else {
+            svgLabels.push(labelResult);
+          }
         }
       }
     }
   }
-
+  console.log(svgPaths);
   return {
     paths: svgPaths.join("\n"),
     labels: svgLabels.join("\n"),
@@ -78,57 +121,144 @@ const convertGraphToSVGEdges = (
   };
 };
 
+export const estimateSvgFontSize = ({
+  label,
+  availableWidth,
+  availableHeight,
+  minFontSize = 8,
+  maxFontSize = 24,
+  fillRatio = 0.6,
+  hideThreshold = 6,
+  viewBoxWidth = 800,
+  viewBoxHeight = 800,
+  assumedRenderWidth = 800,
+  assumedRenderHeight = 800,
+}: {
+  label: string;
+  availableWidth: number;
+  availableHeight: number;
+  minFontSize?: number;
+  maxFontSize?: number;
+  fillRatio?: number;
+  hideThreshold?: number;
+  viewBoxWidth?: number;
+  viewBoxHeight?: number;
+  assumedRenderWidth?: number;
+  assumedRenderHeight?: number;
+}): number => {
+  const charCount = label.length;
+  const maxWidth = availableWidth * fillRatio;
+  const maxHeight = availableHeight * fillRatio;
+
+  // Calculate scaling factor based on viewBox vs assumed render size
+  // When viewBox is smaller than assumed size, we need to scale DOWN the font
+  const scaleX = viewBoxWidth / assumedRenderWidth;
+  const scaleY = viewBoxHeight / assumedRenderHeight;
+  const scale = Math.max(scaleX, scaleY); // Use max to ensure text fits
+
+  // Solve for fontSize such that: charCount * fontSize * 0.6 <= maxWidth
+  const sizeByWidth = maxWidth / (charCount * 0.5); // Reduced character width ratio
+  const sizeByHeight = maxHeight * 0.8; // Reduce height usage
+
+  let estimatedSize = Math.floor(Math.min(sizeByWidth, sizeByHeight));
+
+  // Apply scaling factor - this now correctly scales down when viewBox is small
+  estimatedSize *= scale;
+
+  estimatedSize = Math.max(minFontSize, Math.min(maxFontSize, estimatedSize));
+
+  return estimatedSize < hideThreshold ? 0 : +estimatedSize.toFixed(1);
+};
+
 const createEdgeLabel = (
   source: NodeSVG,
   target: NodeSVG,
-  edge: EdgeSVG
+  edge: EdgeSVG,
+  bounds: Bounds,
+  curvatureMultiplier: number = 0
 ): string => {
   const color = edge.color || "currentColor";
-  const isCurved = edge.type.includes("curved");
+  const isCurved = edge.type.includes("curved") || curvatureMultiplier !== 0;
+  const label = edge.label || "";
 
   if (isCurved) {
-    // Create offset curved path for text
-    const pathId = `path-${source.x}-${source.y}-${target.x}-${target.y}`;
-    const controlPoints = calculateBezierControlPoints(source, target);
+    // Create offset curved path for text with adjusted curvature
+    const pathId = `path-${source.x.toFixed(1)}-${source.y.toFixed(
+      1
+    )}-${target.x.toFixed(1)}-${target.y.toFixed(1)}-${curvatureMultiplier}`;
 
-    // Calculate offset distance from edge thickness
-    const offsetDistance = Math.max(edge.size * 2 + 12, 10);
+    // Reduced offset distance for better text placement
+    const offsetDistance = Math.max(edge.size * 1.5 + 8, 6);
 
-    // Create offset control points
+    // Create offset control points with reduced curvature for text path
     const dx = target.x - source.x;
     const dy = target.y - source.y;
     const distance = Math.sqrt(dx * dx + dy * dy);
     const perpX = -dy / distance;
     const perpY = dx / distance;
 
-    const offsetControlX = controlPoints.cp1x + perpX * offsetDistance;
-    const offsetControlY = controlPoints.cp1y + perpY * offsetDistance;
-
-    const pathData = optimizePath(
-      `M ${source.x} ${source.y} Q ${offsetControlX} ${offsetControlY} ${target.x} ${target.y}`
+    // Reduce curvature for text path (50% of edge curvature)
+    const textControlPoints = calculateBezierControlPoints(
+      source,
+      target,
+      curvatureMultiplier * 0.5
     );
+    const offsetControlX = textControlPoints.cp1x + perpX * offsetDistance;
+    const offsetControlY = textControlPoints.cp1y + perpY * offsetDistance;
+
+    const fontSize = estimateSvgFontSize({
+      label,
+      availableWidth: Math.abs(dx),
+      availableHeight: Math.abs(dy),
+      viewBoxWidth: bounds.width,
+      viewBoxHeight: bounds.height,
+    });
+
+    if (fontSize === 0) return "";
+
+    // Determine text direction to avoid upside-down text
+    const shouldReverse = dx < 0;
+    const pathData = shouldReverse
+      ? `M ${target.x} ${target.y} Q ${offsetControlX} ${offsetControlY} ${source.x} ${source.y}`
+      : `M ${source.x} ${source.y} Q ${offsetControlX} ${offsetControlY} ${target.x} ${target.y}`;
 
     return `<defs>
               <path id="${pathId}" d="${pathData}" />
             </defs>
-            <text fill="${color}" font-size="8" font-family="Arial, sans-serif">
+            <text fill="${color}" font-size="${fontSize}">
               <textPath href="#${pathId}" startOffset="50%" text-anchor="middle" dominant-baseline="central">
-                ${edge.label}
+                ${label}
               </textPath>
             </text>`;
   } else {
-    // Straight line label with offset
+    // Straight line label with better orientation handling
     const { x, y, angle } = calculateLabelPosition(source, target, edge);
-    const offsetDistance = Math.max(edge.size * 2 + 12, 10); // Offset from edge
+    const offsetDistance = Math.max(edge.size * 1.5 + 8, 6);
     const offsetX = Math.sin((angle * Math.PI) / 180) * offsetDistance;
     const offsetY = -Math.cos((angle * Math.PI) / 180) * offsetDistance;
+
+    const fontSize = estimateSvgFontSize({
+      label,
+      availableWidth: Math.abs(target.x - source.x),
+      availableHeight: Math.abs(target.y - source.y),
+    });
+
+    if (fontSize === 0) return "";
+
+    // Adjust angle to prevent upside-down text
+    let adjustedAngle = angle;
+    if (angle > 90 || angle < -90) {
+      adjustedAngle = angle + 180;
+    }
 
     return `<text x="${x + offsetX}" y="${
       y + offsetY
     }" text-anchor="middle" dominant-baseline="middle" 
-            transform="rotate(${angle}, ${x + offsetX}, ${y + offsetY})" 
-            fill="${color}" font-size="8" font-family="Arial, sans-serif">
-            ${edge.label}
+            transform="rotate(${adjustedAngle}, ${x + offsetX}, ${
+      y + offsetY
+    })" 
+            fill="${color}" font-size="${fontSize}">
+            ${label}
            </text>`;
   }
 };
@@ -264,27 +394,32 @@ const optimizePath = (pathData: string): string => {
 const createEdgePath = (
   source: NodeSVG,
   target: NodeSVG,
-  edge: EdgeSVG
+  edge: EdgeSVG,
+  curvatureMultiplier: number = 0
 ): string => {
   const dx = target.x - source.x;
   const dy = target.y - source.y;
   const distance = Math.sqrt(dx * dx + dy * dy);
-
   // If nodes are too close, don't draw edge
   if (distance < source.size + target.size) return "";
+  console.log(distance);
 
   // Unit vector from source to target
   const ux = dx / distance;
   const uy = dy / distance;
 
   const thickness = edge.size;
-  const isCurved = edge.type.includes("curved");
+  const isCurved = edge.type.includes("curved") || curvatureMultiplier !== 0;
 
   let startX: number, startY: number, endX: number, endY: number;
 
   if (isCurved) {
     // For curved edges, calculate intersection points with the actual curve
-    const curvePoints = calculateCurveNodeIntersections(source, target);
+    const curvePoints = calculateCurveNodeIntersections(
+      source,
+      target,
+      curvatureMultiplier
+    );
     startX = curvePoints.startX;
     startY = curvePoints.startY;
     endX = curvePoints.endX;
@@ -296,12 +431,39 @@ const createEdgePath = (
     endX = target.x - ux * target.size;
     endY = target.y - uy * target.size;
   }
+  console.log(edge.type);
 
   switch (edge.type) {
     case "line":
+      if (curvatureMultiplier !== 0) {
+        return createCurvedLinePath(
+          source,
+          target,
+          startX,
+          startY,
+          endX,
+          endY,
+          thickness,
+          curvatureMultiplier
+        );
+      }
       return createStraightLinePath(startX, startY, endX, endY, thickness);
 
     case "arrow":
+      if (curvatureMultiplier !== 0) {
+        return createCurvedArrowPath(
+          source,
+          target,
+          startX,
+          startY,
+          endX,
+          endY,
+          thickness,
+          false,
+          true,
+          curvatureMultiplier
+        );
+      }
       return createArrowPath(
         startX,
         startY,
@@ -313,6 +475,20 @@ const createEdgePath = (
       );
 
     case "doubleArrow":
+      if (curvatureMultiplier !== 0) {
+        return createCurvedArrowPath(
+          source,
+          target,
+          startX,
+          startY,
+          endX,
+          endY,
+          thickness,
+          true,
+          true,
+          curvatureMultiplier
+        );
+      }
       return createArrowPath(startX, startY, endX, endY, thickness, true, true);
 
     case "curved":
@@ -323,7 +499,8 @@ const createEdgePath = (
         startY,
         endX,
         endY,
-        thickness
+        thickness,
+        curvatureMultiplier
       );
 
     case "curvedArrow":
@@ -336,7 +513,8 @@ const createEdgePath = (
         endY,
         thickness,
         false,
-        true
+        true,
+        curvatureMultiplier
       );
 
     case "curvedDoubleArrow":
@@ -349,7 +527,8 @@ const createEdgePath = (
         endY,
         thickness,
         true,
-        true
+        true,
+        curvatureMultiplier
       );
 
     default:
@@ -359,9 +538,14 @@ const createEdgePath = (
 
 const calculateCurveNodeIntersections = (
   source: NodeSVG,
-  target: NodeSVG
+  target: NodeSVG,
+  curvatureMultiplier: number = 0
 ): { startX: number; startY: number; endX: number; endY: number } => {
-  const controlPoints = calculateBezierControlPoints(source, target);
+  const controlPoints = calculateBezierControlPoints(
+    source,
+    target,
+    curvatureMultiplier
+  );
 
   // Find intersection with source node circle
   const startIntersection = findCurveCircleIntersection(
@@ -519,9 +703,9 @@ const createArrowPath = (
   const perpX = (-uy * thickness) / 2;
   const perpY = (ux * thickness) / 2;
 
-  // Arrow head dimensions - scale better for thick lines
-  const arrowLength = Math.max(thickness * 2.5, 8);
-  const arrowWidth = Math.max(thickness * 1.8, 6);
+  // Better arrow head scaling for thin lines
+  const arrowLength = Math.max(thickness * 2, Math.min(thickness * 3.5, 12));
+  const arrowWidth = Math.max(thickness * 1.2, Math.min(thickness * 2.2, 8));
 
   let adjustedStartX = startX;
   let adjustedStartY = startY;
@@ -582,9 +766,14 @@ const createCurvedLinePath = (
   startY: number,
   endX: number,
   endY: number,
-  thickness: number
+  thickness: number,
+  curvatureMultiplier: number = 0
 ): string => {
-  const controlPoints = calculateBezierControlPoints(source, target);
+  const controlPoints = calculateBezierControlPoints(
+    source,
+    target,
+    curvatureMultiplier
+  );
   return createCurvedPathWithThickness(
     startX,
     startY,
@@ -607,13 +796,18 @@ const createCurvedArrowPath = (
   endY: number,
   thickness: number,
   startArrow: boolean,
-  endArrow: boolean
+  endArrow: boolean,
+  curvatureMultiplier: number = 0
 ): string => {
-  const controlPoints = calculateBezierControlPoints(source, target);
+  const controlPoints = calculateBezierControlPoints(
+    source,
+    target,
+    curvatureMultiplier
+  );
 
-  // Arrow head dimensions - scale better for thick lines
-  const arrowLength = Math.max(thickness * 2.5, 8);
-  const arrowWidth = Math.max(thickness * 1.8, 6);
+  // Better arrow head scaling for thin lines
+  const arrowLength = Math.max(thickness * 2, Math.min(thickness * 3.5, 12));
+  const arrowWidth = Math.max(thickness * 1.2, Math.min(thickness * 2.2, 8));
 
   // Calculate tangent vectors at actual curve endpoints for arrow positioning
   const startTangentX = 2 * (controlPoints.cp1x - startX);
@@ -687,13 +881,18 @@ const createCurvedArrowPath = (
   return path;
 };
 
-const calculateBezierControlPoints = (source: NodeSVG, target: NodeSVG) => {
+const calculateBezierControlPoints = (
+  source: NodeSVG,
+  target: NodeSVG,
+  curvatureMultiplier: number = 0
+) => {
   const dx = target.x - source.x;
   const dy = target.y - source.y;
   const distance = Math.sqrt(dx * dx + dy * dy);
 
-  // Reduced curvature for less curved lines
-  const curvature = distance * 0.15;
+  // Base curvature reduced for less dramatic curves
+  const baseCurvature = distance * 0.12;
+  const curvature = baseCurvature + baseCurvature * curvatureMultiplier;
 
   // Perpendicular vector for curve direction
   const perpX = -dy / distance;
@@ -788,8 +987,6 @@ const createCurvedPathWithThickness = (
   return path;
 };
 
-//---
-
 export const convertGraphToSVG = async (
   graph: GraphSVG,
   options: {
@@ -811,7 +1008,7 @@ export const convertGraphToSVG = async (
   } = options;
 
   // Calculate bounding box of all nodes
-  const bounds = calculateGraphBounds(graph, padding);
+  const bounds = calculateGraphBounds(graph, { padding });
 
   // Use calculated bounds or provided dimensions
   const svgWidth = width || bounds.width;
@@ -822,10 +1019,10 @@ export const convertGraphToSVG = async (
     paths: edgesSVG,
     defs,
     labels,
-  } = convertGraphToSVGEdges(graph, optimize);
+  } = convertGraphToSVGEdges(graph, bounds, optimize);
 
   // Generate nodes SVG
-  const nodesSVG = await convertGraphToSVGNodes(graph, embedImages);
+  const nodesSVG = await convertGraphToSVGNodes(graph, embedImages, bounds);
 
   // Combine everything into final SVG
   const svg = `<svg 
@@ -857,45 +1054,140 @@ export const convertGraphToSVG = async (
   return svg;
 };
 
-const calculateGraphBounds = (graph: GraphSVG, padding: number) => {
-  if (Object.keys(graph.nodes).length === 0) {
+const calculateGraphBounds = (
+  graph: GraphSVG,
+  options: {
+    padding?: number;
+    labelFontSize?: number;
+    averageCharWidth?: number;
+    labelOffset?: number;
+    edgeLabelSpace?: number;
+  }
+): Bounds => {
+  const nodes = Object.values(graph.nodes);
+
+  if (nodes.length === 0) {
     return { minX: 0, minY: 0, width: 100, height: 100 };
   }
+
+  const {
+    padding = 10,
+    labelFontSize = 5,
+    averageCharWidth = 0.6,
+    labelOffset = 10,
+    edgeLabelSpace = 3,
+  } = options;
 
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
   let maxY = -Infinity;
 
-  for (const node of Object.values(graph.nodes)) {
-    // Account for node size
+  // Calculate bounds for nodes including their visual elements
+  nodes.forEach((node) => {
+    // Node circle bounds
     const nodeMinX = node.x - node.size;
-    const nodeMinY = node.y - node.size;
     const nodeMaxX = node.x + node.size;
+    const nodeMinY = node.y - node.size;
     const nodeMaxY = node.y + node.size;
 
-    // Account for label if present (estimate label width)
+    // Label bounds (positioned to the right of the node in your SVG)
     if (node.label) {
-      const labelWidth = estimateTextWidth(node.label, node.size * 0.3);
-      const labelHeight = node.size * 0.3;
-      const labelX = nodeMaxX + 5; // 5px gap
-      const labelY = node.y;
-
+      const labelWidth = node.label.length * labelFontSize * averageCharWidth;
+      const labelX = node.x + labelOffset;
       const labelMaxX = labelX + labelWidth;
-      const labelMinY = labelY - labelHeight / 2;
-      const labelMaxY = labelY + labelHeight / 2;
 
-      minX = Math.min(minX, nodeMinX);
-      minY = Math.min(minY, nodeMinY, labelMinY);
+      minX = Math.min(minX, nodeMinX, labelX);
       maxX = Math.max(maxX, nodeMaxX, labelMaxX);
-      maxY = Math.max(maxY, nodeMaxY, labelMaxY);
     } else {
       minX = Math.min(minX, nodeMinX);
-      minY = Math.min(minY, nodeMinY);
       maxX = Math.max(maxX, nodeMaxX);
-      maxY = Math.max(maxY, nodeMaxY);
     }
-  }
+
+    minY = Math.min(minY, nodeMinY);
+    maxY = Math.max(maxY, nodeMaxY);
+  });
+
+  // Calculate bounds for edge labels
+  graph.edges.forEach((edge) => {
+    if (edge.label) {
+      const sourceNode = graph.nodes[edge.source];
+      const targetNode = graph.nodes[edge.target];
+
+      if (sourceNode && targetNode) {
+        // Estimate midpoint of edge
+        const midX = (sourceNode.x + targetNode.x) / 2;
+        const midY = (sourceNode.y + targetNode.y) / 2;
+
+        // Estimate label dimensions
+        const labelWidth = edge.label.length * labelFontSize * averageCharWidth;
+        const labelHeight = labelFontSize;
+
+        // Add some space around the label for curved text paths
+        const labelMinX = midX - labelWidth / 2 - edgeLabelSpace;
+        const labelMaxX = midX + labelWidth / 2 + edgeLabelSpace;
+        const labelMinY = midY - labelHeight / 2 - edgeLabelSpace;
+        const labelMaxY = midY + labelHeight / 2 + edgeLabelSpace;
+
+        minX = Math.min(minX, labelMinX);
+        maxX = Math.max(maxX, labelMaxX);
+        minY = Math.min(minY, labelMinY);
+        maxY = Math.max(maxY, labelMaxY);
+      }
+    }
+  });
+
+  // Account for edge thickness and curvature
+  graph.edges.forEach((edge) => {
+    const sourceNode = graph.nodes[edge.source];
+    const targetNode = graph.nodes[edge.target];
+
+    if (sourceNode && targetNode) {
+      const edgeThickness = edge.size / 2;
+
+      // For curved edges, add extra space
+      if (edge.type.includes("curved")) {
+        const dx = Math.abs(targetNode.x - sourceNode.x);
+        const dy = Math.abs(targetNode.y - sourceNode.y);
+        const curveOffset = Math.max(dx, dy) * 0.2; // Rough estimate for curve offset
+
+        minX = Math.min(
+          minX,
+          Math.min(sourceNode.x, targetNode.x) - curveOffset - edgeThickness
+        );
+        maxX = Math.max(
+          maxX,
+          Math.max(sourceNode.x, targetNode.x) + curveOffset + edgeThickness
+        );
+        minY = Math.min(
+          minY,
+          Math.min(sourceNode.y, targetNode.y) - curveOffset - edgeThickness
+        );
+        maxY = Math.max(
+          maxY,
+          Math.max(sourceNode.y, targetNode.y) + curveOffset + edgeThickness
+        );
+      } else {
+        // Straight edges
+        minX = Math.min(
+          minX,
+          Math.min(sourceNode.x, targetNode.x) - edgeThickness
+        );
+        maxX = Math.max(
+          maxX,
+          Math.max(sourceNode.x, targetNode.x) + edgeThickness
+        );
+        minY = Math.min(
+          minY,
+          Math.min(sourceNode.y, targetNode.y) - edgeThickness
+        );
+        maxY = Math.max(
+          maxY,
+          Math.max(sourceNode.y, targetNode.y) + edgeThickness
+        );
+      }
+    }
+  });
 
   return {
     minX: minX - padding,
@@ -912,7 +1204,8 @@ const estimateTextWidth = (text: string, fontSize: number): number => {
 
 const convertGraphToSVGNodes = async (
   graph: GraphSVG,
-  embedImages: boolean
+  embedImages: boolean,
+  bounds: Bounds
 ): Promise<string> => {
   const nodeElements: string[] = [];
   const embeddedImages = new Map<
@@ -950,7 +1243,8 @@ const convertGraphToSVGNodes = async (
       node,
       nodeId,
       embeddedImages,
-      embedImages
+      embedImages,
+      bounds
     );
     nodeElements.push(nodeElement);
   }
@@ -960,7 +1254,7 @@ const convertGraphToSVGNodes = async (
 
   if (embeddedImages.size > 0) {
     result += "<defs>\n";
-    for (const [imageUrl, imageData] of embeddedImages) {
+    for (const [_imageUrl, imageData] of embeddedImages) {
       result += imageData.content + "\n";
     }
     result += "</defs>\n";
@@ -969,43 +1263,6 @@ const convertGraphToSVGNodes = async (
   result += nodeElements.join("\n");
 
   return result;
-};
-
-const createImageUseElement = (
-  imageData: { id: string; content: string; viewBox: string },
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  padding: number = 4
-): string => {
-  // Calculate available space for the image (with padding)
-  const availableWidth = width - padding * 2;
-  const availableHeight = height - padding * 2;
-
-  // Parse the viewBox to get original aspect ratio
-  const viewBoxParts = imageData.viewBox.split(" ").map((v) => parseFloat(v));
-  const originalWidth = viewBoxParts[2] - viewBoxParts[0];
-  const originalHeight = viewBoxParts[3] - viewBoxParts[1];
-  const aspectRatio = originalWidth / originalHeight;
-
-  // Calculate scaled dimensions maintaining aspect ratio
-  let scaledWidth, scaledHeight;
-  if (availableWidth / availableHeight > aspectRatio) {
-    // Height is the limiting factor
-    scaledHeight = availableHeight;
-    scaledWidth = scaledHeight * aspectRatio;
-  } else {
-    // Width is the limiting factor
-    scaledWidth = availableWidth;
-    scaledHeight = scaledWidth / aspectRatio;
-  }
-
-  // Center the image within the available space
-  const imageX = x + padding + (availableWidth - scaledWidth) / 2;
-  const imageY = y + padding + (availableHeight - scaledHeight) / 2;
-
-  return `<use href="#${imageData.id}" x="${imageX}" y="${imageY}" width="${scaledWidth}" height="${scaledHeight}"/>`;
 };
 
 // Helper function to escape XML characters
@@ -1023,7 +1280,8 @@ const createNodeElement = (
   node: NodeSVG,
   nodeId: string,
   embeddedImages: Map<string, { id: string; content: string; viewBox: string }>,
-  embedImages: boolean
+  embedImages: boolean,
+  bounds: Bounds
 ): string => {
   const { x, y, size, color = "#cccccc", image, label } = node;
   const imagePadding = size * 0.1; // 10% padding
@@ -1076,7 +1334,14 @@ const createNodeElement = (
 
   // Add label if present
   if (label) {
-    const fontSize = +Math.min(16, Math.max(5, size * 0.3)).toFixed(1);
+    // const fontSize = +Math.min(16, Math.max(5, size * 0.3)).toFixed(1);
+    const fontSize = estimateSvgFontSize({
+      label,
+      availableWidth: 100,
+      availableHeight: 20,
+      viewBoxWidth: bounds.width,
+      viewBoxHeight: bounds.height,
+    });
     const labelX = x + size + 5; // 5px gap from node edge
     const labelY = y + fontSize / 3; // Slightly above center for better visual alignment
 
@@ -1216,7 +1481,11 @@ export const convertGraphToSVGAdvanced = async (
     embedImages?: boolean;
     optimize?: boolean;
     nodeRenderer?: (node: NodeSVG, nodeId: string) => string;
-    edgeRenderer?: (graph: GraphSVG, optimize: boolean) => SVGResult;
+    edgeRenderer?: (
+      graph: GraphSVG,
+      bounds: Bounds,
+      optimize?: boolean
+    ) => SVGResult;
   } = {}
 ): Promise<string> => {
   const {
@@ -1230,11 +1499,11 @@ export const convertGraphToSVGAdvanced = async (
     edgeRenderer = convertGraphToSVGEdges,
   } = options;
 
-  const bounds = calculateGraphBounds(graph, padding);
+  const bounds = calculateGraphBounds(graph, { padding });
   const svgWidth = width || bounds.width;
   const svgHeight = height || bounds.height;
 
-  const { paths: edgesSVG, labels } = edgeRenderer(graph, optimize);
+  const { paths: edgesSVG, labels } = edgeRenderer(graph, bounds, optimize);
 
   let nodesSVG: string;
   if (nodeRenderer) {
@@ -1245,7 +1514,7 @@ export const convertGraphToSVGAdvanced = async (
     nodesSVG = nodeElements.join("\n");
   } else {
     // Use default node renderer
-    nodesSVG = await convertGraphToSVGNodes(graph, embedImages);
+    nodesSVG = await convertGraphToSVGNodes(graph, embedImages, bounds);
   }
 
   const svg = `<svg 
