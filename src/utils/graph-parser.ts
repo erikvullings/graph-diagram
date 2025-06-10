@@ -8,6 +8,9 @@ import group from "../assets/group.svg";
 import tag from "../assets/tag.svg";
 import book from "../assets/book.svg";
 import education from "../assets/education.svg";
+import goal from "../assets/goal.svg";
+import control from "../assets/control.svg";
+import neutral from "../assets/neutral.svg";
 
 export type NodeType =
   | "node"
@@ -20,7 +23,10 @@ export type NodeType =
   | "book"
   | "education"
   | "company"
-  | "concept";
+  | "concept"
+  | "goal"
+  | "control"
+  | "neutral";
 
 export class GraphParser {
   nodes: Map<string, any>;
@@ -34,7 +40,7 @@ export class GraphParser {
   }>;
   title = "Graph Diagram";
   nodeNames =
-    /node|person|group|tag|message|location|document|company|concept|book|education/i;
+    /node|person|group|tag|message|location|document|company|concept|book|education|goal|control|neutral/i;
 
   constructor() {
     this.nodes = new Map();
@@ -91,6 +97,12 @@ export class GraphParser {
         return book;
       case "education":
         return education;
+      case "goal":
+        return goal;
+      case "control":
+        return control;
+      case "neutral":
+        return neutral;
     }
   }
 
